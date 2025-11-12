@@ -1,0 +1,18 @@
+Namespace(data='Games', batchSize=50, hidden_size=50, epoch=20, lr=0.001, l2=0.0001, user_update='rnn', item_update='rnn', user_long='orgat', item_long='orgat', user_short='att', item_short='att', feat_drop=0.3, attn_drop=0.3, layer_num=2, item_max_length=50, user_max_length=50, k_hop=3, gpu='3', last_item=False, record=False, val=False, model_record=False)
+train number: 194210
+test number: 30901
+user number: 31013
+item number: 23715
+Loaded negative samples from ./Data/Games_neg.pkl
+Traceback (most recent call last):
+  File "/mnt/storage/jiwei/DGSR/new_main.py", line 100, in <module>
+    model = DGSR(user_num=user_num, item_num=item_num, input_dim=opt.hidden_size, item_max_length=opt.item_max_length,
+  File "/mnt/storage/jiwei/DGSR/DGSR.py", line 42, in __init__
+    self.layers = nn.ModuleList([DGSRLayers(self.hidden_size, self.hidden_size, self.user_max_length, self.item_max_length, feat_drop, attn_drop,
+  File "/mnt/storage/jiwei/DGSR/DGSR.py", line 42, in <listcomp>
+    self.layers = nn.ModuleList([DGSRLayers(self.hidden_size, self.hidden_size, self.user_max_length, self.item_max_length, feat_drop, attn_drop,
+  File "/mnt/storage/jiwei/DGSR/DGSR.py", line 90, in __init__
+    self.K = torch.tensor(K).cuda()
+  File "/home/jiwei/miniconda3/envs/dgsr/lib/python3.10/site-packages/torch/cuda/__init__.py", line 314, in _lazy_init
+    torch._C._cuda_init()
+RuntimeError: No CUDA GPUs are available

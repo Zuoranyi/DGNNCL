@@ -1,1 +1,20 @@
 .idea/
+
+# 忽略日志、数据、模型
+logs/
+Newdata/
+results/
+save_models/
+
+# Python 缓存和虚拟环境
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.pt
+*.pth
+.env/
+.venv/
+.DS_Store
+

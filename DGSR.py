@@ -47,6 +47,7 @@ class DGSR(nn.Module):
     def forward(self, g, user_index=None, last_item_index=None, neg_tar=None, is_training=False):
         feat_dict = None
         user_layer = []
+        # 把图里的user nodes和item nodes的id从上面初始化完的embedding中查出来；然后把查表得到的 embedding 存回图里
         g.nodes['user'].data['user_h'] = self.user_embedding(g.nodes['user'].data['user_id'].cuda())
         g.nodes['item'].data['item_h'] = self.item_embedding(g.nodes['item'].data['item_id'].cuda())
         if self.layer_num > 0:
@@ -54,12 +55,12 @@ class DGSR(nn.Module):
                 feat_dict = conv(g, feat_dict)
                 user_layer.append(graph_user(g, user_index, feat_dict['user']))
             if self.last_item:
-                item_embed = graph_item(g, last_item_index, feat_dict['item'])
+                item_embed = graph_item(g, last_item_index, feat_dict['item']) 
                 user_layer.append(item_embed)
         unified_embedding = self.unified_map(torch.cat(user_layer, -1))
         score = torch.matmul(unified_embedding, self.item_embedding.weight.transpose(1, 0))
         if is_training:
-            return score
+            return score, unified_embedding
         else:
             neg_embedding = self.item_embedding(neg_tar)
             score_neg = torch.matmul(unified_embedding.unsqueeze(1), neg_embedding.transpose(2, 1)).squeeze(1)
@@ -87,6 +88,7 @@ class DGSRLayers(nn.Module):
         self.user_max_length = user_max_length
         self.item_max_length = item_max_length
         self.K = torch.tensor(K).cuda()
+        # 如果用户（或物品）既有“长期兴趣”又有“短期兴趣”，那我们需要一个线性层来融合这两种特征
         if self.user_long in ['orgat', 'gcn', 'gru'] and self.user_short in ['last','att', 'att1']:
             self.agg_gate_u = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=False)
         if self.item_long in ['orgat', 'gcn', 'gru'] and self.item_short in ['last', 'att', 'att1']:
@@ -155,6 +157,7 @@ class DGSRLayers(nn.Module):
             exit()
 
     def forward(self, g, feat_dict=None):
+        # 还没有feature dictionary的情况下，调用初始化
         if feat_dict == None:
             if self.user_long in ['gcn']:
                 g.nodes['user'].data['norm'] = g['by'].in_degrees().unsqueeze(1).cuda()
@@ -163,6 +166,7 @@ class DGSRLayers(nn.Module):
             user_ = g.nodes['user'].data['user_h']
             item_ = g.nodes['item'].data['item_h']
         else:
+            # 有dictionary之后，调用上一层的embedding
             user_ = feat_dict['user'].cuda()
             item_ = feat_dict['item'].cuda()
             if self.user_long in ['gcn']:
@@ -305,30 +309,95 @@ def order_update(edges):
     return dic
 
 
-def collate(data):
-    user = []
-    user_l = []
+import torch
+import dgl
+
+# 把 DataLoader 传进来的一个 batch 的原始样本（list of tuples）整合成模型可以直接使用的批量张量和辅助信息结构
+def collate(data, device=None):
+    """
+    DataLoader 的 collate 函数：
+    - 支持 cw_pos_steps (cross-window)
+    - 自动兼容 list / tensor / None
+    - 维持 DGSR 兼容格式
+    """
+    user_ids = []
+    user_alias = []
     graph = []
     label = []
     last_item = []
+    extra = []
+
     for da in data:
-        user.append(da[1]['user'])
-        user_l.append(da[1]['u_alis'])
+        meta = da[1]
+
+        # ---- 基础字段 ----
+        def safe_int(x):
+            if x is None:
+                return 0
+            if torch.is_tensor(x):
+                return int(x.item())
+            return int(x)
+
+        user_id = safe_int(meta.get('user'))
+        alias = safe_int(meta.get('u_alis'))
+        target = safe_int(meta.get('target'))
+        last = safe_int(meta.get('last_alis'))
+
+        # ---- cw_pos_steps 处理 ----
+        pos_steps_tensor = meta.get('cw_pos_steps', [])
+        if pos_steps_tensor is not None and len(pos_steps_tensor) > 0:
+            pos_steps_tensor = torch.as_tensor(
+                pos_steps_tensor, dtype=torch.long,
+                device=device if device is not None and torch.cuda.is_available() else 'cpu'
+            )
+            pos_steps = [int(step) for step in pos_steps_tensor.view(-1).tolist() if step >= 0]
+        else:
+            pos_steps = []
+
+        # ---- 当前 step ----
+        step_tensor = meta.get('step')
+        step_val = safe_int(step_tensor)
+
+        # ---- 收集额外信息 ----
+        extra.append({
+            'user_id': user_id,
+            'path': meta.get('path'),
+            'cw_pos_steps': pos_steps,
+            'step': step_val
+        })
+
+        # ---- 收集 batch 输入 ----
+        user_ids.append(user_id)
+        user_alias.append(alias)
         graph.append(da[0][0])
-        label.append(da[1]['target'])
-        last_item.append(da[1]['last_alis'])
-    return torch.tensor(user_l).long(), dgl.batch(graph), torch.tensor(label).long(), torch.tensor(last_item).long()
+        label.append(target)
+        last_item.append(last)
+
+    # ---- 返回 DGSR 格式 ----
+    return (
+        torch.tensor(user_ids).long(),
+        torch.tensor(user_alias).long(),
+        dgl.batch(graph),
+        torch.tensor(label).long(),
+        torch.tensor(last_item).long(),
+        extra
+    )
+
 
 
 def neg_generate(user, data_neg, neg_num=100):
     neg = np.zeros((len(user), neg_num), np.int32)
     for i, u in enumerate(user):
+        if torch.is_tensor(u):
+            u = int(u.item())
+        else:
+            u = int(u)
         neg[i] = np.random.choice(data_neg[u], neg_num, replace=False)
     return neg
 
 
+
 def collate_test(data, user_neg):
-    # 生成负样本和每个序列的长度
     user = []
     graph = []
     label = []
@@ -338,7 +407,17 @@ def collate_test(data, user_neg):
         graph.append(da[0][0])
         label.append(da[1]['target'])
         last_item.append(da[1]['last_alis'])
-    return torch.tensor(user).long(), dgl.batch(graph), torch.tensor(label).long(), torch.tensor(last_item).long(), torch.Tensor(neg_generate(user, user_neg)).long()
+
+    # 保证 user 是 int list
+    user = [int(u) if not torch.is_tensor(u) else int(u.item()) for u in user]
+
+    return (
+        torch.tensor(user).long(),
+        dgl.batch(graph),
+        torch.tensor(label).long(),
+        torch.tensor(last_item).long(),
+        torch.tensor(neg_generate(user, user_neg)).long()
+    )
 
 
 
