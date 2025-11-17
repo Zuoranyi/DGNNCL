@@ -1,0 +1,12 @@
+usage: main.py [-h] [--data DATA] [--batchSize BATCHSIZE]
+               [--hidden_size HIDDEN_SIZE] [--epoch EPOCH] [--lr LR] [--l2 L2]
+               [--user_update USER_UPDATE] [--item_update ITEM_UPDATE]
+               [--user_long USER_LONG] [--item_long ITEM_LONG]
+               [--user_short USER_SHORT] [--item_short ITEM_SHORT]
+               [--feat_drop FEAT_DROP] [--attn_drop ATTN_DROP]
+               [--layer_num LAYER_NUM] [--item_max_length ITEM_MAX_LENGTH]
+               [--user_max_length USER_MAX_LENGTH] [--k_hop K_HOP] [--gpu GPU]
+               [--last_item] [--record] [--val] [--model_record]
+               [--lambda_cw LAMBDA_CW] [--cw_temp CW_TEMP]
+               [--cw_pos_k CW_POS_K] [--cw_cache_size CW_CACHE_SIZE]
+main.py: error: unrecognized arguments:  

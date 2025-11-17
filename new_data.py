@@ -142,7 +142,7 @@ def generate_data(data, graph, item_max_length, user_max_length, train_path, tes
                   cw_pos_k=2):
     user = data['user_id'].unique()
     # ✅ tqdm progress bar for users
-        a = Parallel(n_jobs=job)(delayed(lambda u: generate_user(u, data, graph, item_max_length, user_max_length, train_path, test_path, k_hop, val_path, cw_pos_k))(u) for u in user)
+    a = Parallel(n_jobs=job)(delayed(lambda u: generate_user(u, data, graph, item_max_length, user_max_length, train_path, test_path, k_hop, val_path, cw_pos_k))(u) for u in user)
     return a
 
 if __name__ == '__main__':
