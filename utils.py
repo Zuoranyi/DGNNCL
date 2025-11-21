@@ -67,18 +67,19 @@ class myFloder(Dataset):
         else:
             user_id, step = None, None
 
-        # ✅ 查找该用户的历史窗口作为 cw_pos_steps
-        cw_k = 2  # 默认取前两个窗口；你也可以从 opt.cw_pos_k 动态传入
-        cw_pos_steps = []
-        if user_id is not None and step is not None:
-            history = self.user_steps[user_id]
-            prev_steps = [s for s in history if s < step]
-            cw_pos_steps = prev_steps[-cw_k:]
+        # # ✅ 查找该用户的历史窗口作为 cw_pos_steps
+        # cw_k = 2  # 默认取前两个窗口；你也可以从 opt.cw_pos_k 动态传入
+        # cw_pos_steps = []
+        # if user_id is not None and step is not None:
+        #     history = self.user_steps[user_id]
+        #     prev_steps = [s for s in history if s < step]
+        #     cw_pos_steps = prev_steps[-cw_k:]
 
         labels.update({
             'user_id': user_id,
-            'step': step,
-            'cw_pos_steps': cw_pos_steps
+            # 'step': step,
+            # 'cw_pos_steps': cw_pos_steps
+            'step': step
         })
 
         return graphs, labels
@@ -95,21 +96,21 @@ def collate(data):
     graph = []
     last_item = []
     label = []
-    extras = []
+    # extras = []
 
     for da in data:
-        g, lbl = da
+        # g, lbl = da
         path = lbl.get('path', None)
-        user_id = lbl.get('user_id', None)
-        step = lbl.get('step', None)
-        cw_pos_steps = lbl.get('cw_pos_steps', [])
+        # user_id = lbl.get('user_id', None)
+        # step = lbl.get('step', None)
+        # cw_pos_steps = lbl.get('cw_pos_steps', [])
 
-        extras.append({
-            'user_id': user_id,
-            'path': path,
-            'step': step,
-            'cw_pos_steps': cw_pos_steps
-        })
+        # extras.append({
+        #     'user_id': user_id,
+        #     'path': path,
+        #     'step': step,
+        #     'cw_pos_steps': cw_pos_steps
+        # })
 
         # 兼容性处理（DGSR 的 batch 输入）
         user.append(user_id if user_id is not None else 0)
@@ -123,7 +124,7 @@ def collate(data):
         dgl.batch_hetero(graph),
         torch.tensor(label).long(),
         torch.tensor(last_item).long(),
-        extras
+        # extras
     )
 
 

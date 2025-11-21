@@ -113,8 +113,10 @@ def generate_user(user, data, graph, item_max_length, user_max_length, train_pat
             all_edge_u = torch.unique(torch.cat(edge_u))
             all_edge_i = torch.unique(torch.cat(edge_i))
             fin_graph = dgl.edge_subgraph(sub_graph, edges={'by':all_edge_i,'pby':all_edge_u})
+            # target为next item
             target = u_seq[j+1]
             last_item = u_seq[j]
+            # u_alis为anchor user node在dgl里的global index；last_alis为last item node在dgl里的global index
             u_alis = torch.where(fin_graph.nodes['user'].data['user_id']==user)[0]
             last_alis = torch.where(fin_graph.nodes['item'].data['item_id']==last_item)[0]
             pos_steps = [step for step in range(max(1, j - cw_pos_k), j)]

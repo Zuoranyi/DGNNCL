@@ -163,9 +163,9 @@ def _trim_user_cache(user_cache, limit):
     for old_step in sorted_steps[:-limit]:
         user_cache.pop(old_step, None)
 
-
+# 为缺失的历史窗口 embedding 做一次离线推理补全（compute-on-demand），确保对比学习能正常获取正样本
 def _infer_embeddings_for_steps(model, base_path, uid, steps, device):
-    """当缓存缺失时，直接前向计算指定 step 的窗口 embedding。"""
+    """当缓存中缺少某个 step 的 embedding 时，从磁盘加载 .bin 图文件，做一次前向推理，补全缓存"""
     if not steps:
         return {}
     if base_path is None:
@@ -178,6 +178,7 @@ def _infer_embeddings_for_steps(model, base_path, uid, steps, device):
     was_training = model.training
     if was_training:
         model.eval()
+# 保存模型当前状态，临时切为 eval 模式。推理时不需要 dropout，不希望扰乱训练模式，推理结束后再切回训练模式
 
     with torch.no_grad():
         for step in steps:

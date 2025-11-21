@@ -115,7 +115,8 @@ class DGSRLayers(nn.Module):
             self.last_weight_u = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         if self.item_short in ['last', 'att']:
             self.last_weight_i = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
-
+        self.freq_weight = nn.Parameter(torch.randn(1))
+            
         if self.item_long in ['orgat']:
             self.i_time_encoding = nn.Embedding(self.user_max_length, self.hidden_size)
             self.i_time_encoding_k = nn.Embedding(self.user_max_length, self.hidden_size)
@@ -193,6 +194,7 @@ class DGSRLayers(nn.Module):
         dic['time'] = edges.data['time']
         dic['user_h'] = edges.src['user_h']
         dic['item_h'] = edges.dst['item_h']
+        dic['freq'] = edges.data['freq']
         return dic
 
     def item_reduce_func(self, nodes):
@@ -206,6 +208,8 @@ class DGSRLayers(nn.Module):
         if self.item_long == 'orgat':
             e_ij = torch.sum((self.i_time_encoding(re_order) + nodes.mailbox['user_h']) * nodes.mailbox['item_h'], dim=2)\
                    /torch.sqrt(torch.tensor(self.hidden_size).float())
+            freq = nodes.mailbox['freq'].float()
+            e_ij = e_ij + self.freq_weight * freq
             alpha = self.atten_drop(F.softmax(e_ij, dim=1))
             if len(alpha.shape) == 2:
                 alpha = alpha.unsqueeze(2)
@@ -314,18 +318,18 @@ import dgl
 
 # 把 DataLoader 传进来的一个 batch 的原始样本（list of tuples）整合成模型可以直接使用的批量张量和辅助信息结构
 def collate(data, device=None):
-    """
-    DataLoader 的 collate 函数：
-    - 支持 cw_pos_steps (cross-window)
-    - 自动兼容 list / tensor / None
-    - 维持 DGSR 兼容格式
-    """
+    # """
+    # DataLoader 的 collate 函数：
+    # - 支持 cw_pos_steps (cross-window)
+    # - 自动兼容 list / tensor / None
+    # - 维持 DGSR 兼容格式
+    # """
+    """DataLoader collation for training batches."""
     user_ids = []
     user_alias = []
     graph = []
     label = []
     last_item = []
-    extra = []
 
     for da in data:
         meta = da[1]
@@ -343,32 +347,37 @@ def collate(data, device=None):
         target = safe_int(meta.get('target'))
         last = safe_int(meta.get('last_alis'))
 
-        # ---- cw_pos_steps 处理 ----
-        pos_steps_tensor = meta.get('cw_pos_steps', [])
-        if pos_steps_tensor is not None and len(pos_steps_tensor) > 0:
-            pos_steps_tensor = torch.as_tensor(
-                pos_steps_tensor, dtype=torch.long,
-                device=device if device is not None and torch.cuda.is_available() else 'cpu'
-            )
-            pos_steps = [int(step) for step in pos_steps_tensor.view(-1).tolist() if step >= 0]
-        else:
-            pos_steps = []
+        # # ---- cw_pos_steps 处理 ----
+        # pos_steps_tensor = meta.get('cw_pos_steps', [])
+        # if pos_steps_tensor is not None and len(pos_steps_tensor) > 0:
+        #     pos_steps_tensor = torch.as_tensor(
+        #         pos_steps_tensor, dtype=torch.long,
+        #         device=device if device is not None and torch.cuda.is_available() else 'cpu'
+        #     )
+        #     pos_steps = [int(step) for step in pos_steps_tensor.view(-1).tolist() if step >= 0]
+        # else:
+        #     pos_steps = []
 
-        # ---- 当前 step ----
-        step_tensor = meta.get('step')
-        step_val = safe_int(step_tensor)
+        # # ---- 当前 step ----
+        # step_tensor = meta.get('step')
+        # step_val = safe_int(step_tensor)
 
-        # ---- 收集额外信息 ----
-        extra.append({
-            'user_id': user_id,
-            'path': meta.get('path'),
-            'cw_pos_steps': pos_steps,
-            'step': step_val
-        })
+        # # ---- 收集额外信息 ----
+        # extra.append({
+        #     'user_id': user_id,
+        #     'path': meta.get('path'),
+        #     'cw_pos_steps': pos_steps,
+        #     'step': step_val
+        # })
 
         # ---- 收集 batch 输入 ----
         user_ids.append(user_id)
         user_alias.append(alias)
+        
+        # user_ids.append(safe_int(meta.get('user')))
+        # user_alias.append(safe_int(meta.get('u_alis')))
+        # label.append(safe_int(meta.get('target')))
+        # last_item.append(safe_int(meta.get('last_alis')))
         graph.append(da[0][0])
         label.append(target)
         last_item.append(last)
@@ -380,7 +389,7 @@ def collate(data, device=None):
         dgl.batch(graph),
         torch.tensor(label).long(),
         torch.tensor(last_item).long(),
-        extra
+        # extra
     )
 
 
