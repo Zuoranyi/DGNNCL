@@ -4,6 +4,8 @@
 # @File : new_main
 # @Software: PyCharm
 
+# contrastive learning on the dgl subgraph,edge dropout
+
 import datetime
 import torch
 from sys import exit
