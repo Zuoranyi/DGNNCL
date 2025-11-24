@@ -4,8 +4,6 @@
 # @File : new_main
 # @Software: PyCharm
 
-# the original new_main.py of dgsr, the backbone for all the vairiations
-
 import datetime
 import torch
 from sys import exit
@@ -25,7 +23,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
-from DGSR_utils import eval_metric, mkdir_if_not_exist, Logger
+from DGSR_utils import eval_metric, mkdir_if_not_exist, Logger, edge_dropout
 
 warnings.filterwarnings('ignore')
 parser = argparse.ArgumentParser()
@@ -56,6 +54,9 @@ parser.add_argument('--lambda_cw', type=float, default=0.0, help='weight for cro
 parser.add_argument('--cw_temp', type=float, default=0.1, help='temperature for cross-window InfoNCE')
 parser.add_argument('--cw_pos_k', type=int, default=2, help='number of previous windows treated as positives')
 parser.add_argument('--cw_cache_size', type=int, default=10, help='maximum number of cached windows per user for contrastive sampling')
+parser.add_argument('--lambda_sub', type=float, default=0.0, help='weight of subgraph contrastive loss')
+parser.add_argument('--edge_drop_rate', type=float, default=0.2, help='edge dropout rate for subgraph augmentation')
+parser.add_argument('--cl_temp', type=float, default=0.2, help='temperature for subgraph contrastive learning')
 
 opt = parser.parse_args()
 args, extras = parser.parse_known_args()
@@ -297,183 +298,85 @@ def cross_window_info_nce(anchor_embeddings, user_ids, positive_groups, temperat
     return torch.stack(losses).mean() 
 # 衡量整个 batch（多个用户）的平均对比学习质量
 
+def info_nce_subgraph(emb_orig, emb_aug, temperature):
+    if temperature <= 0:
+        raise ValueError('temperature must be positive')
+    emb_orig_norm = F.normalize(emb_orig, dim=-1)
+    emb_aug_norm = F.normalize(emb_aug, dim=-1)
+    logits = torch.matmul(emb_orig_norm, emb_aug_norm.transpose(0, 1)) / temperature
+    labels = torch.arange(emb_orig_norm.shape[0], device=emb_orig_norm.device)
+    return F.cross_entropy(logits, labels)
+
+
 
 best_result = [0, 0, 0, 0, 0, 0]
 best_epoch = [0, 0, 0, 0, 0, 0]
 stop_num = 0
-embedding_cache = defaultdict(dict)
-cache_size = max(opt.cw_cache_size, opt.cw_pos_k)
 
 for epoch in range(opt.epoch):
     stop = True
     epoch_loss = 0
     epoch_rec_loss = 0
-    epoch_cw_loss = 0
+    epoch_cl_loss = 0
     iter = 0
     print('start training: ', datetime.datetime.now())
     model.train()
 
-    for user_id_tensor, user_alias, batch_graph, label, last_item, extra in train_data:
+    for user_id_tensor, user_alias, batch_graph, label, last_item in train_data:
         iter += 1
-        import os, re
-        for e in extra:
-            path = e.get('path')
-            step = None
-            if path:
-                filename = os.path.basename(path)
-                match = re.search(r'_(\d+)\.bin$', filename)
-                if match:
-                    step = int(match.group(1))
-            e['step'] = step
+        batch_graph = batch_graph.to(device)
+        user_alias = user_alias.to(device)
+        last_item = last_item.to(device)
+        label = label.to(device)
 
-        if iter < 3:
-            print(f"\n[Debug] Batch {iter}")
-            print("Example extra:", extra[:2])
-
-        score, anchor_embedding = model(
-            batch_graph.to(device),
-            user_alias.to(device),
-            last_item.to(device),
+        score, emb_orig = model(
+            batch_graph,
+            user_alias,
+            last_item,
             is_training=True
         )
-        anchor_embedding = anchor_embedding.detach()
-        loss = loss_func(score, label.to(device))
-        user_ids_cpu = user_id_tensor
-        user_ids_gpu = user_ids_cpu.to(device)
+        rec_loss = loss_func(score, label)
 
-        score, anchor_embedding = model(
-            batch_graph.to(device),
-            user_alias.to(device),
-            last_item.to(device),
-            is_training=True
-        )
-        rec_loss = loss_func(score, label.to(device))
-
-        if opt.lambda_cw > 0 and iter < 5:
-            print(f"\n[Debug] Batch {iter}")
-            print("Example extra:", extra[:2])
-            print("Cache size:", len(embedding_cache))
-
-        if opt.lambda_cw > 0:
-            positive_groups = collect_positive_groups_from_cache(
-                embedding_cache, user_ids_cpu.tolist(), extra,
-                opt.cw_pos_k, anchor_embedding.device,
-                model=model, cache_limit=cache_size
+        loss_cl = torch.tensor(0.0, device=device)
+        if opt.lambda_sub > 0:
+            aug_graph = edge_dropout(batch_graph, drop_rate=opt.edge_drop_rate)
+            _, emb_aug = model(
+                aug_graph,
+                user_alias,
+                last_item,
+                is_training=True
             )
+            loss_cl = info_nce_subgraph(emb_orig, emb_aug, opt.cl_temp)
 
-            if iter < 10:
-                valid_pos = sum(len(p) > 0 for p in positive_groups)
-                print(f"[Iter {iter}] 有正样本的比例: {valid_pos}/{len(positive_groups)}")
-
-            cw_loss = cross_window_info_nce(anchor_embedding, user_ids_gpu, positive_groups, opt.cw_temp)
-        else:
-            cw_loss = anchor_embedding.new_tensor(0.0)
-
-        total_loss = rec_loss + opt.lambda_cw * cw_loss
+        total_loss = rec_loss + opt.lambda_sub * loss_cl
         optimizer.zero_grad()
         total_loss.backward()
         optimizer.step()
 
-        if cache_size > 0:
-            update_embedding_cache(embedding_cache, user_ids_cpu.tolist(), extra, anchor_embedding, cache_size)
-
         epoch_loss += total_loss.item()
         epoch_rec_loss += rec_loss.item()
-        if opt.lambda_cw > 0:
-            epoch_cw_loss += (opt.lambda_cw * cw_loss).item()
+        if opt.lambda_sub > 0:
+            epoch_cl_loss += (opt.lambda_sub * loss_cl).item()
 
         if iter % 400 == 0:
-            cw_print = epoch_cw_loss / iter if opt.lambda_cw > 0 else 0.0
-            print('Iter {}, loss {:.4f}, rec {:.4f}, cw {:.4f}'.format(
-                iter, epoch_loss / iter, epoch_rec_loss / iter, cw_print
+            cl_print = epoch_cl_loss / iter if opt.lambda_sub > 0 else 0.0
+            print('Iter {}, loss {:.4f}, rec {:.4f}, cl {:.4f}'.format(
+                iter, epoch_loss / iter, epoch_rec_loss / iter, cl_print
             ), datetime.datetime.now())
-    # import time
-
-    # for user_id_tensor, user_alias, batch_graph, label, last_item, extra in train_data:
-    #     iter += 1
-
-    #     # 开始计时
-    #     t_start = time.time()
-
-    #     # 数据预处理
-    #     t0 = time.time()
-    #     import os, re
-    #     for e in extra:
-    #         path = e.get('path')
-    #         step = None
-    #         if path:
-    #             filename = os.path.basename(path)
-    #             match = re.search(r'_(\d+)\.bin$', filename)
-    #             if match:
-    #                 step = int(match.group(1))
-    #         e['step'] = step
-    #     t_preprocess = time.time() - t0
-
-    #     # 前向传播
-    #     t1 = time.time()
-    #     score, anchor_embedding = model(
-    #         batch_graph.to(device),
-    #         user_alias.to(device),
-    #         last_item.to(device),
-    #         is_training=True
-    #     )
-    #     rec_loss = loss_func(score, label.to(device))
-    #     t_forward = time.time() - t1
-
-    #     # CW 对比学习
-    #     t2 = time.time()
-    #     if opt.lambda_cw > 0:
-    #         positive_groups = collect_positive_groups_from_cache(
-    #             embedding_cache, user_id_tensor.tolist(), extra,
-    #             opt.cw_pos_k, anchor_embedding.device
-    #         )
-    #         cw_loss = cross_window_info_nce(anchor_embedding, user_id_tensor.to(device), positive_groups, opt.cw_temp)
-    #     else:
-    #         cw_loss = anchor_embedding.new_tensor(0.0)
-    #     t_cw = time.time() - t2
-
-    #     # 反向传播与优化
-    #     t3 = time.time()
-    #     total_loss = rec_loss + opt.lambda_cw * cw_loss
-    #     optimizer.zero_grad()
-    #     total_loss.backward()
-    #     optimizer.step()
-    #     t_backward = time.time() - t3
-
-    #     # 缓存更新
-    #     t4 = time.time()
-    #     if cache_size > 0:
-    #         update_embedding_cache(embedding_cache, user_id_tensor.tolist(), extra, anchor_embedding, cache_size)
-    #     t_cache = time.time() - t4
-
-    #     # 累计
-    #     epoch_loss += total_loss.item()
-    #     epoch_rec_loss += rec_loss.item()
-    #     if opt.lambda_cw > 0:
-    #         epoch_cw_loss += (opt.lambda_cw * cw_loss).item()
-
-    #     # 打印
-    #     if iter % 400 == 0:
-    #         t_total = time.time() - t_start
-    #         cw_print = epoch_cw_loss / iter if opt.lambda_cw > 0 else 0.0
-    #         print(f"Iter {iter}, loss {epoch_loss/iter:.4f}, rec {epoch_rec_loss/iter:.4f}, cw {cw_print:.4f}")
-    #         print(f"   [Time per batch] preprocess={t_preprocess:.3f}s | "
-    #             f"forward={t_forward:.3f}s | cw={t_cw:.3f}s | backward={t_backward:.3f}s | "
-    #             f"cache={t_cache:.3f}s | total={t_total:.3f}s  {datetime.datetime.now()}")
 
 
     if iter > 0:
         epoch_loss /= iter
         epoch_rec_loss /= iter
-        epoch_cw_loss = (epoch_cw_loss / iter) if opt.lambda_cw > 0 else 0.0
+        epoch_cl_loss = (epoch_cl_loss / iter) if opt.lambda_sub > 0 else 0.0
     else:
         epoch_loss = 0.0
         epoch_rec_loss = 0.0
-        epoch_cw_loss = 0.0
+        epoch_cl_loss = 0.0
 
     model.eval()
-    print('Epoch {}, loss {:.4f}, rec {:.4f}, cw {:.4f}'.format(
-        epoch, epoch_loss, epoch_rec_loss, epoch_cw_loss
+    print('Epoch {}, loss {:.4f}, rec {:.4f}, cl {:.4f}'.format(
+        epoch, epoch_loss, epoch_rec_loss, epoch_cl_loss
     ), '=============================================')
 
     # val
@@ -558,7 +461,6 @@ for epoch in range(opt.epoch):
                 best_epoch[3], best_epoch[4], best_epoch[5]
             )
         )
-
 
 
 

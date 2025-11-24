@@ -7,6 +7,8 @@
 
 import numpy as np
 import sys
+import torch
+import dgl
 
 def eval_metric(all_top, random_rank=True):
     recall5, recall10, recall20, ndgg5, ndgg10, ndgg20 = [], [], [], [], [], []
@@ -65,3 +67,30 @@ class Logger(object):
         #this handles the flush command by doing nothing.
         #you might want to specify some extra behavior here.
         pass
+
+def edge_dropout(graph, drop_rate=0.2):
+    """
+    Randomly drop edges in the k-hop neighbor expansion region of a DGLGraph.
+
+    User→item edges and item→item sequential edges are always preserved.
+    """
+    if drop_rate <= 0:
+        return graph
+
+    device = graph.device
+    keep_masks = {}
+    for canonical_etype in graph.canonical_etypes:
+        src_type, _, dst_type = canonical_etype
+        num_edges = graph.num_edges(canonical_etype)
+        if num_edges == 0:
+            keep_masks[canonical_etype] = torch.zeros(0, device=device, dtype=torch.bool)
+            continue
+
+        if (src_type == 'user' and dst_type == 'item') or (src_type == 'item' and dst_type == 'item'):
+            keep_masks[canonical_etype] = torch.ones(num_edges, device=device, dtype=torch.bool)
+        else:
+            random_tensor = torch.rand(num_edges, device=device)
+            keep_masks[canonical_etype] = random_tensor >= drop_rate
+
+    subgraph = dgl.edge_subgraph(graph, keep_masks, relabel_nodes=False)
+    return subgraph

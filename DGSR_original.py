@@ -5,7 +5,7 @@
 # @File : DGSR
 # @Software: PyCharm
 
-# contrastive learning on the dgl subgraph augmentation,edge dropout
+# the original version of DGSR.py, the backbone for different variations
 
 import dgl
 import torch
@@ -47,14 +47,12 @@ class DGSR(nn.Module):
                                                 self.user_update, self.item_update) for _ in range(self.layer_num)])
         self.reset_parameters()
 
-    def encode_subgraph(self, g, user_index=None, last_item_index=None, is_training=False):
+    def forward(self, g, user_index=None, last_item_index=None, neg_tar=None, is_training=False):
         feat_dict = None
         user_layer = []
-
-        device = g.device
-        g.nodes['user'].data['user_h'] = self.user_embedding(g.nodes['user'].data['user_id'].to(device))
-        g.nodes['item'].data['item_h'] = self.item_embedding(g.nodes['item'].data['item_id'].to(device))
-
+        # 把图里的user nodes和item nodes的id从上面初始化完的embedding中查出来；然后把查表得到的 embedding 存回图里
+        g.nodes['user'].data['user_h'] = self.user_embedding(g.nodes['user'].data['user_id'].cuda())
+        g.nodes['item'].data['item_h'] = self.item_embedding(g.nodes['item'].data['item_id'].cuda())
         if self.layer_num > 0:
             for conv in self.layers:
                 feat_dict = conv(g, feat_dict)
@@ -63,10 +61,6 @@ class DGSR(nn.Module):
                 item_embed = graph_item(g, last_item_index, feat_dict['item']) 
                 user_layer.append(item_embed)
         unified_embedding = self.unified_map(torch.cat(user_layer, -1))
-        return unified_embedding
-
-    def forward(self, g, user_index=None, last_item_index=None, neg_tar=None, is_training=False):
-        unified_embedding = self.encode_subgraph(g, user_index, last_item_index, is_training)
         score = torch.matmul(unified_embedding, self.item_embedding.weight.transpose(1, 0))
         if is_training:
             return score, unified_embedding
@@ -124,6 +118,7 @@ class DGSRLayers(nn.Module):
             self.last_weight_u = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         if self.item_short in ['last', 'att']:
             self.last_weight_i = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
+        self.freq_weight = nn.Parameter(torch.randn(1))
             
         if self.item_long in ['orgat']:
             self.i_time_encoding = nn.Embedding(self.user_max_length, self.hidden_size)
@@ -202,6 +197,7 @@ class DGSRLayers(nn.Module):
         dic['time'] = edges.data['time']
         dic['user_h'] = edges.src['user_h']
         dic['item_h'] = edges.dst['item_h']
+        dic['freq'] = edges.data['freq']
         return dic
 
     def item_reduce_func(self, nodes):
@@ -215,6 +211,8 @@ class DGSRLayers(nn.Module):
         if self.item_long == 'orgat':
             e_ij = torch.sum((self.i_time_encoding(re_order) + nodes.mailbox['user_h']) * nodes.mailbox['item_h'], dim=2)\
                    /torch.sqrt(torch.tensor(self.hidden_size).float())
+            freq = nodes.mailbox['freq'].float()
+            e_ij = e_ij + self.freq_weight * freq
             alpha = self.atten_drop(F.softmax(e_ij, dim=1))
             if len(alpha.shape) == 2:
                 alpha = alpha.unsqueeze(2)
@@ -432,3 +430,7 @@ def collate_test(data, user_neg):
         torch.tensor(last_item).long(),
         torch.tensor(neg_generate(user, user_neg)).long()
     )
+
+
+
+
